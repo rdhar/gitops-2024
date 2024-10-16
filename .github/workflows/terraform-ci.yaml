@@ -1,0 +1,204 @@
+name: Terraform CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/*.tf"
+      - "**/*.tfvars"
+  #TODO: Trigger to run apply on comment
+
+# Disable permissions for all available scopes.
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.repository }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: ./terraform
+
+jobs:
+  test:
+    name: Test Terraform
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      contents: read
+      id-token: write
+      pull-requests: write
+    environment: development
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      # AWS Credentials required for tflint deep check
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          aws-region: us-east-1
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_DEV_OIDC_ROLE_ARN }}
+          role-session-name: tflint-deep-check
+
+      - name: Cache TFLint plugin directory
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
+        with:
+          path: .trunk/plugins/
+          key: ${{ runner.os }}-3ware-mtc-go-2024-tflint-${{ hashFiles('.trunk/configs/.tflint.hcl') }}
+
+      # Install terraform; required to initialise working directory
+      - name: Setup terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.9.7
+          terraform_wrapper: true
+
+      # Run terraform format
+      - name: Terraform fmt
+        id: tf-fmt
+        run: terraform fmt -check
+        continue-on-error: true
+
+      # Initialise terraform in the directory where terraform file have changed.
+      - name: Initialise terraform
+        id: tf-init
+        run: |
+          terraform init -backend=false
+
+      # Run terraform validate
+      - name: Terraform validate
+        id: tf-validate
+        run: terraform validate -no-color
+        continue-on-error: true
+
+      - name: Add PR comment on terraform failure
+        if: ${{ steps.tf-fmt.outputs.exitcode != 0 || steps.tf-validate.outputs.exitcode != 0 }}
+        uses: marocchino/sticky-pull-request-comment@331f8f5b4215f0445d3c07b4967662a32a2d3e31 # v2.9.0
+        with:
+          header: Terraform validation error
+          message: |
+            #### Terraform Format and Style ${{ steps.tf-fmt.outcome }}:
+
+            ${{ steps.tf-fmt.outputs.stdout }}
+
+            #### Terraform Initialization ${{ steps.tf-init.outcome }}
+            #### Terraform Validation ${{ steps.tf-validate.outcome }}:
+
+            ```
+            ${{ steps.tf-validate.outputs.stderr }}
+            ```
+
+            Resolve these issues and commit your changes to trigger another deployment.
+
+      - name: Terraform error
+        if: ${{ steps.tf-fmt.outputs.exitcode != 0 || steps.tf-validate.outputs.exitcode != 0 }}
+        run: |
+          exit 1
+
+      # Install TFLint; required to download plugins
+      - name: Install TFLint
+        uses: terraform-linters/setup-tflint@15ef44638cb215296e7ba9e7a41f20b5b06f4784 # v4.0.0
+        with:
+          tflint_version: v0.53.0
+          tflint_wrapper: true
+
+      # Initialise TFLint using the configuration file for CI in the trunk directory
+      # The CI configuration enables deep check
+      - name: Initialise TFLint
+        run: |
+          tflint --init --config=$GITHUB_WORKSPACE/.trunk/configs/.tflint_ci.hcl
+
+      - name: Run TFLint
+        id: tflint
+        run: |
+          tflint --config=$GITHUB_WORKSPACE/.trunk/configs/.tflint_ci.hcl --format compact
+        continue-on-error: true
+
+      - name: Add PR comment on TFLint failure
+        if: ${{ steps.tflint.outputs.exitcode != 0 }}
+        uses: marocchino/sticky-pull-request-comment@331f8f5b4215f0445d3c07b4967662a32a2d3e31 # v2.9.0
+        with:
+          header: TLint error
+          message: |
+            #### TFLint ${{ steps.tflint.outcome }}:
+
+            ```
+            ${{ steps.tflint.outputs.stdout }}
+            ```
+
+            Resolve these issues and commit your changes to trigger another deployment.
+
+      - name: TFLint error
+        if: ${{ steps.tflint.outputs.exitcode != 0 }}
+        run: |
+          exit 1
+
+      # Run Trunk Check without terraform and tflint due to deep check issue
+      - name: Trunk Check
+        uses: trunk-io/trunk-action@2eaee169140ec559bd556208f9f99cdfdf468da8 # v1.1.17
+        with:
+          arguments: --filter checkov,trivy
+
+  # plan-and-apply-dev:
+  #   name: Terraform Deploy
+  #   needs: [trunk-check-tf]
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     actions: read # Required to download repository artifact.
+  #     checks: write # Required to add status summary.
+  #     contents: read # Required to checkout repository.
+  #     id-token: write # Required to authenticate via OIDC.
+  #     pull-requests: write # Required to add PR comment and label.
+
+  #   env:
+  #     TF_TOKEN_APP_TERRAFORM_IO: ${{ secrets.TF_TOKEN_APP_TERRAFORM_IO }}
+
+  #   environment: development
+
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+  #     - name: Configure AWS credentials via OIDC
+  #       uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+  #       with:
+  #         aws-region: us-east-1
+  #         role-to-assume: ${{ secrets.AWS_DEV_OIDC_ROLE_ARN }}
+  #         role-session-name: gitops-2024-terraform-deploy
+
+  #     - name: Setup terraform
+  #       uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+  #       with:
+  #         terraform_version: 1.9.7
+  #         terraform_wrapper: true
+
+  #     - name: Plan
+  #       uses: devsectop/tf-via-pr@cc83c7bae8216e747bb8c074524665b2416822f5 # v11.4.6
+  #       with:
+  #         arg_command: plan
+  #         arg_lock: false
+
+  #     # TODO: Add pr comment explaining what to do run trigger apply
+  #     # TODO: Add label tf:plan-approved to PR on approval
+
+  #     - name: Apply
+  #       # TODO: Run when approved via comment
+  #       uses: devsectop/tf-via-pr@cc83c7bae8216e747bb8c074524665b2416822f5 # v11.4.6
+  #       with:
+  #         arg_command: apply
+  #         arg_auto_approve: true
+  #         arg_lock: true
+
+  #     # This plan should not produce a diff
+  #     - name: Check idempotency
+  #       id: idempotency
+  #       uses: devsectop/tf-via-pr@cc83c7bae8216e747bb8c074524665b2416822f5 # v11.4.6
+  #       with:
+  #         arg_command: plan
+  #         arg_lock: false
+  #         arg_detailed_exitcode: true
+  #         arg_out: tfplan-check # Give this plan a different name
