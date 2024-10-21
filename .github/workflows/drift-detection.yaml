@@ -1,0 +1,77 @@
+name: Drift Detection
+
+on:
+  schedule:
+    - cron: 0 7 * * *
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  drift-detection:
+    name: Drift Detection
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read # Required to download repository artifact.
+      checks: write # Required to add status summary.
+      contents: read # Required to checkout repository.
+      id-token: write # Required to authenticate via OIDC.
+      pull-requests: write # Required to add PR comment and label.
+    environment: development
+    env:
+      TF_TOKEN_APP_TERRAFORM_IO: ${{ secrets.TF_TOKEN_APP_TERRAFORM_IO }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ secrets.AWS_DEV_OIDC_ROLE_ARN }}
+          role-session-name: gitops2024-development-terraform-deploy
+
+      - name: Terraform Plan
+        id: drift-plan
+        uses: devsectop/tf-via-pr@cc83c7bae8216e747bb8c074524665b2416822f5 # v11.4.6
+        with:
+          arg_chdir: terraform/development
+          arg_command: plan
+          arg_lock: false
+          arg_detailed_exitcode: true
+
+      - name: Create Drift Issue
+        if: ${{ steps.drift-plan.outputs.exitcode == 2 }}
+        uses: dacbd/create-issue-action@cdb57ab6ff8862aa09fee2be6ba77a59581921c2 # v2.0.0
+        with:
+          token: ${{ github.token }}
+          title: ${{ github.workflow }}
+          body: |
+            ${{ github.workflow }} workflow run [${{ github.run_id }}](https://github.com/3ware/gitops-2024/actions/runs/${{ github.run_id }}) detected a diff.
+
+            <details>
+            <summary>Outline of changes:</summary>
+            <br>
+
+            ```
+            ${{ steps.drift-plan.outputs.outline }}
+            ```
+
+            </details>
+
+            <details>
+            <summary>${{ steps.drift-plan.outputs.summary }}</summary>
+            <br>
+
+            ```
+            ${{ steps.drift-plan.outputs.last_result }}
+            ```
+
+            </details>
+
+          labels: tf:diff
