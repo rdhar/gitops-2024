@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0](https://github.com/3ware/gitops-2024/compare/v1.1.0...v1.2.0) (2024-10-22)
+
+
+### Features
+
+* **terraform:** Deploy gitops network changes ([#32](https://github.com/3ware/gitops-2024/issues/32)) ([1028428](https://github.com/3ware/gitops-2024/commit/10284287eafc9b554101cf848227d409c92ad52c))
+
 ## [1.1.0](https://github.com/3ware/gitops-2024/compare/v1.0.0...v1.1.0) (2024-10-22)
 
 
