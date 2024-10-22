@@ -75,6 +75,7 @@ jobs:
         run: terraform validate -no-color
         continue-on-error: true
 
+      # Add PR comment with formatting and validation errors
       - name: Add PR comment on terraform failure
         if: ${{ steps.tf-fmt.outputs.exitcode != 0 || steps.tf-validate.outputs.exitcode != 0 }}
         uses: marocchino/sticky-pull-request-comment@331f8f5b4215f0445d3c07b4967662a32a2d3e31 # v2.9.0
@@ -95,6 +96,7 @@ jobs:
 
             Resolve these issues and commit your changes to trigger another deployment.
 
+      # Exit this workflow if fmt or validate fail
       - name: Terraform error
         if: ${{ steps.tf-fmt.outputs.exitcode != 0 || steps.tf-validate.outputs.exitcode != 0 }}
         run: |
@@ -119,13 +121,14 @@ jobs:
           tflint --config=$GITHUB_WORKSPACE/.trunk/configs/.tflint_ci.hcl --format compact
         continue-on-error: true
 
+      # Add PR comment when TFLint detects a violation
       - name: Add PR comment on TFLint failure
         if: ${{ steps.tflint.outputs.exitcode != 0 }}
         uses: marocchino/sticky-pull-request-comment@331f8f5b4215f0445d3c07b4967662a32a2d3e31 # v2.9.0
         with:
           header: TLint error
           hide_and_recreate: true
-          hide_classify: OUTDATED
+          hide_classify: RESOLVED
           message: |
             #### TFLint failure :x:
 
@@ -135,6 +138,7 @@ jobs:
 
             Resolve these issues and commit your changes to trigger another deployment.
 
+      # Exit workflow if TFLint detects a violation
       - name: TFLint error
         if: ${{ steps.tflint.outputs.exitcode != 0 }}
         run: |
@@ -159,6 +163,9 @@ jobs:
     name: Terraform Deploy
     runs-on: ubuntu-latest
     needs: [test-terraform]
+    # This job should run `terraform plan` following the successful completion of test-terraform
+    # `terraform apply` is triggered when an approval comment is added to the pull request. A pr comment event does not trigger
+    # the test workflow, so `terraform apply` should run when test-terraform is skipped
     if: |
       always() &&
       github.event_name == 'pull_request' && needs.test-terraform.result == 'success' ||
@@ -172,6 +179,8 @@ jobs:
     environment: development
     env:
       TF_TOKEN_APP_TERRAFORM_IO: ${{ secrets.TF_TOKEN_APP_TERRAFORM_IO }}
+      # Conditions that should evaluated to tru to run terraform apply
+      # Used in `if` conditions to trigger certain steps below or change arguments
       APPLY_TRIGGER: ${{ github.event.issue.pull_request && contains(github.event.comment.body, 'terraform plan approved') }}
 
     steps:
@@ -191,28 +200,62 @@ jobs:
           # $REPOSITORY, as described in the github docs, does not work
           role-session-name: gitops2024-development-terraform-deploy
 
+      - name: Assign approved label
+        if: ${{ env.APPLY_TRIGGER }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} --add-label "approved" --remove-label "approval required"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Terraform
-        uses: devsectop/tf-via-pr@cc83c7bae8216e747bb8c074524665b2416822f5 # v11.4.6
+        uses: devsectop/tf-via-pr@f1acaae1d94826457fa57bc65f1df318fd81b3bc # v12.0.0
+        id: terraform
         with:
-          arg_chdir: terraform/development
-          arg_command: ${{ env.APPLY_TRIGGER && 'apply' || 'plan' }}
-          arg_lock: ${{ env.APPLY_TRIGGER && 'true' || 'false' }}
-          plan_parity: ${{ env.APPLY_TRIGGER && 'true' || 'false' }}
+          working-directory: terraform/development
+          # If the APPLY_TRIGGER is true, run 'apply'; if not, run 'plan'
+          command: ${{ env.APPLY_TRIGGER && 'apply' || 'plan' }}
+          arg-lock: ${{ env.APPLY_TRIGGER && 'true' || 'false' }}
+          plan-parity: ${{ env.APPLY_TRIGGER && 'true' || 'false' }}
+          hide-args: true
+          plan-encrypt: ${{ secrets.PGP_SECRET_SIGNING_PASSPHRASE }}
+
+      - name: Assign approval label
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} --add-label "approval required"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update PR comment to request plan approval
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@331f8f5b4215f0445d3c07b4967662a32a2d3e31 # v2.9.0
+        with:
+          header: ${{ steps.terraform.outputs.comment-id }}
+          append: true
+          message: |
+            #### Terraform Plan Approval required.
+
+            Add a comment with: **terraform plan approved** to approve.
+
+      #TODO: What to do when the plan is rejected
 
       # This plan should not produce a diff
       - name: Check idempotency
         if: ${{ env.APPLY_TRIGGER }}
         id: idempotency
-        uses: devsectop/tf-via-pr@cc83c7bae8216e747bb8c074524665b2416822f5 # v11.4.6
+        uses: devsectop/tf-via-pr@f1acaae1d94826457fa57bc65f1df318fd81b3bc # v12.0.0
         with:
-          arg_chdir: terraform/development
-          arg_command: plan
-          arg_lock: false
-          arg_detailed_exitcode: true
-          arg_out: tfplan-${{ github.head_ref}}-PR${{ github.event.pull_request.number}}-check # Give this plan a different name
+          working-directory: terraform/development
+          command: plan
+          arg-lock: false
+          # TODO: Removed from current version.
+          #? How will we do a test destroy in dev without a diff plan which doesn't overwrite the main plan
+          #arg-out: tfplan-${{ github.head_ref}}-PR${{ github.event.pull_request.number}}-check # Give this plan a different name
+          hide-args: true
+          plan-encrypt: ${{ secrets.PGP_SECRET_SIGNING_PASSPHRASE }}
 
       - name: Add PR comment terraform diff
-        if: ${{ steps.idempotency.outputs.exitcode != 0 }}
+        if: ${{ steps.idempotency.outputs.exitcode == 2 }}
         uses: marocchino/sticky-pull-request-comment@331f8f5b4215f0445d3c07b4967662a32a2d3e31 # v2.9.0
         with:
           header: Diff Error
@@ -224,6 +267,6 @@ jobs:
             ${{ github.workflow }} workflow run: [${{ github.run_id }}](https://github.com/3ware/gitops-2024/actions/runs/${{ github.run_id }})
 
       - name: Diff Error
-        if: ${{ steps.idempotency.outputs.exitcode != 0 }}
+        if: ${{ steps.idempotency.outputs.exitcode == 2 }}
         run: |
           exit 1
