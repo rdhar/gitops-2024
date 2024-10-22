@@ -306,13 +306,6 @@ jobs:
             ```diff
             ${{ steps.terraform.outputs.diff }}
             ```
-            </details>
-
-            <details><summary>${{ steps.terraform.outputs.summary }}</summary>
-
-            ```hcl
-            ${{ steps.terraform.outputs.result }}
-            ```
 
             </details>
 
