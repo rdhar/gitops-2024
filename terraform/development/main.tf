@@ -124,6 +124,9 @@ resource "aws_instance" "grafana_server" {
 #   data "http" "grafana" {
 #     url    = "http://${aws_instance.grafana_server.public_ip}:3000"
 #     method = "HEAD"
+#     retry {
+#       attempts = 5
+#     }
 #   }
 
 #   assert {
