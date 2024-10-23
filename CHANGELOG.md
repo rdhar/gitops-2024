@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0](https://github.com/3ware/gitops-2024/compare/v1.2.0...v1.3.0) (2024-10-23)
+
+
+### Features
+
+* **terraform:** Add grafana server ([#33](https://github.com/3ware/gitops-2024/issues/33)) ([2ef4c64](https://github.com/3ware/gitops-2024/commit/2ef4c644d73882f3749f7bab4def59a92c55e249))
+
 ## [1.2.0](https://github.com/3ware/gitops-2024/compare/v1.1.0...v1.2.0) (2024-10-22)
 
 
